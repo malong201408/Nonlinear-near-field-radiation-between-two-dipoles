@@ -1,0 +1,306 @@
+(* ================================================================\
+*)(*Code_nonlinear_ver8.m*)(*Nonlinear Casimir-Polder heat-transfer \
+rate Q12=Q(T2)-Q(T1)*)(**)(*Key fixes vs ver7:*)(*-Re[] applied to \
+the full integrand (QBlue*QYellow*QRed is*)(*mathematically real but \
+PP0 is complex,making QBlue complex*)(*unless Re[] is taken \
+explicitly).*)(*-GbarNum uses Re[wn]^2 to guarantee real \
+division.*)(*-Jacobian in the compactified integral \
+corrected.*)(**)(*Usage:Get["Code_nonlinear_ver8.m"]*)(*Or open in \
+Mathematica front-end and Evaluate Notebook.*)(* \
+================================================================*)
+
+SetDirectory[NotebookDirectory[]];
+ClearAll["Global`*"];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 1:Physical constants*)
+(* ================================================================*)
+
+hbar = 6.582119569*^-16;(*eV s*)
+kB = 8.6173303*^-5;(*eV/K*)
+c = 3.0*^18;(*Angstrom/s*)
+eps0 = 1/(4 Pi);(*CGS units*)
+eps0SI = 0.005526349406;(*e/(V A)*)
+ESU = 2.99792458*10^-6(*V/A*)
+T1 = 300;(*K,cold body*)
+T2 = 400;(*K,hot body*)
+
+(* ================================================================*)
+\
+
+(*SECTION 2:Molecular parameters (4-DANS)*)
+(* ================================================================*)
+
+axx = 53;(*Angstrom^3*)
+ayy = 19;
+bxxx = -250;(*Angstrom^3/esu*)
+byyy = 0;
+
+xi = 1 - ayy/axx;
+om0 = 2.9/hbar;(*rad/s*)
+EffR = (axx/(2 Pi eps0))^(1/3);(*Angstrom*)
+EffB = (axx*(1 - xi))^(3/2)/(hbar*om0)^(1/2);
+
+eta = 0.01/
+   hbar;(*damping,s^{-1}*)(*Fixed tensor skeletons-- built once,never \
+inside the integrand*)
+Atilde = DiagonalMatrix[{axx, ayy, 0}]/EffR^3;
+
+Btilde = ConstantArray[0, {3, 3, 3}];
+Btilde[[1, 1, 1]] = bxxx/EffB;
+Btilde[[2, 2, 2]] = byyy/EffB;
+
+k0 = om0*EffR/c;(*dimensionless reference wave-vector*)
+
+(* ================================================================*)
+\
+
+(*SECTION 3:Scalar Lorentzians*)(**)(*All tensor quantities factor as \
+(scalar) x (fixed tensor).*)(*lor[w] is the only frequency-dependent \
+piece.*)(* \
+================================================================*)
+
+lor[w_] := 1/(1 - w^2 - I*eta*(w/om0));
+
+(*Full polarisability tensor*)
+alphaTens[w_] := Atilde*lor[w];
+
+(*Hyperpolarisability scalars (tensor part=EffB*Btilde)*)
+sB012[w_, w1_] := Btilde*lor[w]*lor[w1]*lor[w - w1];
+sBN12N0[w_, w1_] := Btilde*lor[-w1]*lor[w - w1]*lor[-w];
+sBN21N0[w_, w1_] := Btilde*lor[-(w - w1)]*lor[w1]*lor[-w];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 4:Geometry (separation-dependent,frequency-free)*)
+(* ================================================================*)
+
+r1n = {0, 0, 0};
+r2n[r2_?NumericQ] := {r2, 0, 0};
+
+(*Returns {Rn,RRmat}-- call once per r2,reuse for all frequencies*)
+geoData[r2_?NumericQ] := Module[{Rvec, Rn, Rhat}, Rvec = r1n - r2n[r2];
+   Rn = Norm[Rvec];
+   Rhat = Rvec/Rn;
+   {Rn, Outer[Times, Rhat, Rhat]}];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 5:Free-space Green tensor G0(w)*)
+(**)
+(*G0full[w,Rn,RRmat]:complex 3x3,full near+far field.*)
+(**)
+(*GbarMat[w,Rn,RRmat]:=G0full/w^2*)
+(*Since kn=k0*w and w is a real integration variable,*)
+(*w^2 is real.We enforce this with Abs[w]^2 so Mathematica*)
+(*does not keep it symbolic.*)
+(* ================================================================*)
+
+T0nfull[w_?NumericQ, Rn_?NumericQ, RRmat_List] := 
+  Module[{kn, knRn, phase, II},
+   kn = k0*w;(*real*)
+   knRn = kn*Rn;(*real*)
+   phase = Exp[I*knRn];(*complex,magnitude 1*)
+   II = IdentityMatrix[3];
+   (phase/(4 Pi Rn^3))*((knRn^2 + (I*knRn - 1))*
+       II + (3*(1 - I*knRn) - knRn^2)*RRmat)];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 6:P^{-1}(w)*)
+(**)
+(*P=I-T.Al.T.Al->I as w->0 (T~w^2)*)
+(*Always well-conditioned;no singularity in w.*)
+(* ================================================================*)
+
+PinvMat[w_?NumericQ, Rn_?NumericQ, RRmat_List] := 
+  Module[{T, Al}, T = T0nfull[w, Rn, RRmat];
+   Al = alphaTens[w];
+   Inverse[IdentityMatrix[3] - T . Al . T . Al]];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 7:Regularised coth*)
+(**)
+(*Handles the w2=0 diagonal (w1=w) without Exclusions.*)
+(* ================================================================*)
+
+(*CothReg[x_?NumericQ]:=If[Abs[x]<1*^-8,1/x,Coth[x]];*)
+
+
+(* ================================================================*)
+\
+
+(*SECTION 7:Core integrand (one quadrature point)*)
+(**)
+
+(* ================================================================*)
+
+
+
+integCore[r2_?NumericQ, w_?NumericQ, w1_?NumericQ, temp_?NumericQ] := 
+  Module[{w2, Rn, RRmat, T0, T1m, T2m, Al0, Al1, Al2, Pi0, Pi1, Pi2, 
+    TbNow, PP0, ImInvTbarPP0, X, Y, b012t, ReM, QBlueVal, QYellowVal, 
+    ee02, ee01, c0, c1, c2, Rb012, RbN12, RbN21, TrD1, TrD2, QRedVal, 
+    prefac},
+   w2 = w - w1;(*geometry:
+   depends on r2 only-- but here we recompute for simplicity.For a \
+big sweep,cache geoData[r2] outside.*)
+   {Rn, RRmat} = geoData[r2];
+   (*---T matrices at the three frequencies---*)
+   T0 = T0nfull[w, Rn, RRmat];
+   T1m = T0nfull[w1, Rn, RRmat];
+   T2m = T0nfull[w2, Rn, RRmat];
+   (*---polarisability tensors---*)
+   Al0 = alphaTens[w];
+   Al1 = alphaTens[w1];
+   Al2 = alphaTens[w2];
+   (*---P^{-1}:3 matrix inversions,each on a well-
+   conditioned matrix---*)
+   Pi0 = PinvMat[w, Rn, RRmat];
+   Pi1 = PinvMat[w1, Rn, RRmat];
+   Pi2 = PinvMat[w2, Rn, RRmat];
+   (*--------------------------------------------------------------*)
+\
+
+   (*QBlue*)
+   (*--------------------------------------------------------------*)
+   
+   PP0 = IdentityMatrix[3] + T0 . Al0 . T0 . Al0;(*complex 3x3*)
+   ImInvTbarPP0 = Im[Inverse[T0] . PP0];(*real 3x3 matrix*)
+   (*M012:beta tensor contracted with (Pi1.T1) and (Pi2.T2)*)
+   X = Pi1 . T1m;
+   Y = Pi2 . T2m;
+   b012t = sB012[w, w1]*Btilde;(*complex 3x3x3*)
+   ReM = Re[
+     TensorContract[
+      TensorProduct[b012t, X, Y], {{2, 4}, {3, 6}}]];(*real 3x3x3*)
+   QBlueVal = 
+    Sum[ImInvTbarPP0[[i, i]]*ReM[[i, i, i]], {i, 
+      3}];(*complex scalar-- Re[] below*) (**Should be real now**)
+   (*--------------------------------------------------------------*)
+\
+
+   (*QYellow=Tr[T.T^dag.P^{-1}.P^{-dag}]*)
+   (*Mathematically real;may have O(eps_machine) imaginary noise.*)
+   (*--------------------------------------------------------------*)
+   
+   QYellowVal = 
+    Tr[T0 . ConjugateTranspose[T0] . Pi0 . ConjugateTranspose[Pi0]];
+   (*--------------------------------------------------------------*)
+\
+
+   (*QRed:Bose-Einstein/coth thermal factors (all real)*)
+   (*--------------------------------------------------------------*)
+   
+   ee02 = 
+    1/(Exp[-(hbar*om0*w)/(kB*temp)] + Exp[(hbar*om0*w2)/(kB*temp)]);
+   ee01 = 
+    1/(Exp[-(hbar*om0*w)/(kB*temp)] + Exp[(hbar*om0*w1)/(kB*temp)]);
+   c0 = Coth[-(hbar*om0*w)/(2*kB*temp)];
+   c1 = Coth[(hbar*om0*w1)/(2*kB*temp)];
+   c2 = Coth[(hbar*om0*w2)/(2*kB*temp)];
+   Rb012 = Re[sB012[w, w1]];
+   RbN12 = Re[sBN12N0[w, w1]];
+   RbN21 = Re[sBN21N0[w, w1]];
+   TrD1 = Sum[(RbN12 - Rb012)[[i, i, i]], {i, 3}];
+   TrD2 = Sum[(RbN21 - Rb012)[[i, i, i]], {i, 3}];
+   QRedVal = ee02*c0*c2*TrD1 + ee01*c0*c1*TrD2;(*real*)
+   (*--------------------------------------------------------------*)
+\
+
+   (*Prefactor*)(**)(*Original:hbar^3 om0^3/(3 Pi^3)*w*)
+   (*QBlue now uses Im[Tbar^{-1}] instead of Im[T^{-1}]:*)
+   (*new prefactor=hbar^3 om0^3/(3 Pi^3*w)*)(**)
+   (*u-substitution in SECTION 10 (the Jacobian supplies a w).*)
+   (*--------------------------------------------------------------*)
+   
+   prefac = (1*w)/(3 Pi^3);
+   prefac*QBlueVal*QYellowVal*QRedVal];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 10:Compactified double integral*)
+(**)
+(*Change of variables:*)
+(*u=w/(1+w) in[0,1],w=u/(1-u)*)
+(*v=w1/w in[0,1],w1=v*w*)
+(**)
+(*Jacobian:dw/du=1/(1-u)^2*)
+(*dw1/dv=w (for fixed u)*)
+(*            =>d(w,w1)/d(u,v)=w/(1-u)^2*)
+(**)
+(*Net power of w in integrand:*)
+(*prefactor contributes 1/w*)
+(*Jacobian contributes w*)
+(*    =>integrand~w^0 at u=0 (finite,no singularity)*)
+(**)
+(*Boundary v=1 (w1=w,w2=0):handled by CothReg.*)
+(*No Exclusions needed.*)
+(* ================================================================*)
+
+Q[r2_?NumericQ, temp_?NumericQ] := 
+  NIntegrate[Module[{w, w1, jac}, w = u/(1 - u);
+    w1 = v*w;
+    jac = w/(1 - u)^2;(*d(w,w1)/d(u,v)*)
+    jac*integCore[r2, w, w1, temp]], {u, 0, 1}, {v, 0, 1}, 
+   Method -> {"GlobalAdaptive", "MaxErrorIncreases" -> 3000}, 
+   AccuracyGoal -> 4, PrecisionGoal -> 4, MaxRecursion -> 60];
+
+Q12[r2_?NumericQ] := Q[r2, T2] - Q[r2, T1];
+
+
+(* ================================================================*)
+\
+
+(*SECTION 11:Optional geometry caching for speed*)
+(**)
+(*geoData is called inside integCore at every quadrature point*)
+(*even though it depends only on r2,not on w.For a fixed r2*)
+(*the values {Rn,RRmat} are identical at every call.*)
+(*Cache them with memoisation so the computation happens once.*)
+(* ================================================================*)
+
+geoData[r2_?NumericQ] := 
+  geoData[r2] = Module[{Rvec, Rn, Rhat}, Rvec = r1n - r2n[r2];
+    Rn = Norm[Rvec];
+    Rhat = Rvec/Rn;
+    {Rn, Outer[Times, Rhat, Rhat]}];
+
+(*Clear memoised values between r2 calls if memory is a concern:*)
+(*clearGeoCache[]:=DownValues[geoData]={};*)
+
+
+(* ================================================================*)
+\
+
+(*SECTION 12:Separation grid and sweep*)
+(* ================================================================*)
+
+r2ListUnit = 
+  Join[Table[10^i, {i, Log10[5], 1 - 1/50, 1/50}], 
+   Table[10^i, {i, 1, 4, 1/50}]];
+r2List = r2ListUnit/EffR;
+
+Q12List = Table[
+   Module[{val},
+    val = Q12[r2];
+    {r2, val}]
+   , {r2, r2List}];
+
+Q12ListUnit = {#[[1]]*EffR, #[[2]]*ESU^2*(4 Pi eps0SI)*hbar*om0^2} & /@
+    Q12List;
+ListLogLogPlot[Q12ListUnit]
